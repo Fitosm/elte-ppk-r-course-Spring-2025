@@ -104,35 +104,61 @@ df |> filter(mindfulness > 6)
 
 ### Data diagnostics
 
-```{r}
-model_complex <- lm(pain ~ age + sex + STAI_trait + pain_cat + mindfulness + 
+```{r diagnostics}
+# Fit the complex model with all predictors
+model_complex <- lm(pain ~ age + sex + STAI_trait + pain_cat + mindfulness +
                       cortisol_serum + cortisol_saliva, data = df)
 
-# Calculate Cook's distance
+# --- Cook's Distance: check for influential observations ---
+# Rule of thumb: anything above 4 / n is potentially influential
 cooks_d <- cooks.distance(model_complex)
-
-# Rule of thumb: cutoff = 4 / n
 cutoff <- 4 / nrow(df)
 
-# Identify influential points
+# Identify points that exceed the cutoff
 influential_points <- which(cooks_d > cutoff)
+length(influential_points)  # Should be reported (e.g., "One point identified")
+influential_points          # Useful to report ID or index of point
 
-length(influential_points)  # how many?
-influential_points          # show their indices
-
-# Plot
+# Plot Cook's Distance with threshold line
 plot(cooks_d, type = "h", main = "Cook's Distance", ylab = "Cook's D")
 abline(h = cutoff, col = "red", lty = 2)
 
-#linearity and homeoscedasticity
-plot(model_complex, which = 1)  # Residuals vs Fitted
+# 👉 In the report:
+# - Mention how many influential points were found.
+# - State whether the model was refit without them (optional).
+# - If you keep the observation, justify it (e.g., not distorting model much).
+```
 
-#normality of residuals
-plot(model_complex, which = 2)  # Q-Q Plot
+```{r diagnostic-plots}
+# --- Linearity & Homoscedasticity ---
+# Residuals vs Fitted plot should show a horizontal "cloud" of points
+plot(model_complex, which = 1)
 
-#multicollinearity
+# 👉 In the report:
+# - If residuals appear randomly scattered, say assumptions are met.
+# - If there's a curve or funnel shape, flag potential violation.
+
+# --- Normality of residuals ---
+# Q-Q plot: points should fall along the diagonal line
+plot(model_complex, which = 2)
+
+# 👉 In the report:
+# - Briefly note whether residuals were approximately normally distributed.
+# - Mention high leverage points (like #35) if they distort normality.
+```
+
+```{r vif-check}
+# --- Multicollinearity ---
+# Variance Inflation Factors (VIFs): values above 5 are concerning
 library(car)
 vif(model_complex)
+
+# 👉 In the report:
+# - Note that most VIFs are acceptable (< 2.5).
+# - Cortisol variables have VIFs > 6 → moderate multicollinearity.
+# - You may decide to keep both and acknowledge this in the discussion,
+#   especially if theoretical justification is strong.
+```
 
 ```
 #### Descriptives of the variables
