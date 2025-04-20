@@ -20,6 +20,9 @@ You will have to create 3 plots based on the datasets and instructions detailed 
 knitr::opts_chunk$set(echo = FALSE)
 library(tidyverse)
 library(tidytuesdayR)
+library(forcats)
+library(viridis)
+library(scales)
 ```
 
 ## Task 1: Climbing expeditions
@@ -31,6 +34,81 @@ The 2020-09-22 TidyTueday datasets are about climbing expeditions. From the thre
 -   The bar colors use the viridis palette and light theme.
 
 ```{r}
+expeditions  <- tidytuesdayR::tt_load('2020-09-22')$expeditions
+  
+  glimpse(expeditions)
+  
+ exp1_summary <- expeditions %>%
+  mutate(peak = fct_lump(peak_name, n = 15, other_level = "Other")) %>%
+  filter(peak != "Other") %>%
+  count(peak, name = "n") %>%
+  mutate(peak = fct_reorder(peak, n))
+ 
+ expeditions <- tidytuesdayR::tt_load('2020-09-22')$expeditions
+
+# Prepare the data
+exp1_summary <- expeditions |>
+  mutate(peak = forcats::fct_lump(peak_name, n = 15, other_level = "Other")) |>
+  filter(peak != "Other") |>
+  count(peak, season, name = "n") |>
+  group_by(peak) |>
+  mutate(total = sum(n)) |>
+  ungroup() |>
+  mutate(peak = forcats::fct_reorder(peak, total))
+
+expeditions <- tidytuesdayR::tt_load('2020-09-22')$expeditions
+
+exp1_summary <- expeditions |>
+  mutate(peak = forcats::fct_lump(peak_name, n = 15, other_level = "Other")) |>
+  filter(peak != "Other") |>
+  count(peak, season, name = "n") |>
+  group_by(peak) |>
+  mutate(total = sum(n)) |>
+  ungroup() |>
+  mutate(peak = forcats::fct_reorder(peak, total))
+
+expeditions <- tidytuesdayR::tt_load('2020-09-22')$expeditions
+
+# Data preparation
+exp1_summary <- expeditions |>
+  mutate(peak = forcats::fct_lump(peak_name, n = 15, other_level = "Other")) |>
+  filter(peak != "Other") |>
+  count(peak, season, name = "n") |>
+  group_by(peak) |>
+  mutate(total = sum(n)) |>
+  ungroup() |>
+  mutate(peak = forcats::fct_reorder(peak, total))
+
+expeditions <- tidytuesdayR::tt_load('2020-09-22')$expeditions
+
+exp1_summary <- expeditions |>
+  mutate(peak = forcats::fct_lump(peak_name, n = 15, other_level = "Other")) |>
+  filter(peak != "Other") |>
+  count(peak, season, name = "n") |>
+  group_by(peak) |>
+  mutate(total = sum(n)) |>
+  ungroup() |>
+  mutate(peak = forcats::fct_reorder(peak, total))
+
+exp1_summary |>
+  ggplot(aes(x = peak, y = n, fill = season)) +
+  geom_col() +
+  coord_flip() +
+  scale_fill_viridis_d() +
+  labs(
+    title = "The 15 most popular peaks stacked by season of expedition",
+    x = NULL,
+    y = "Number of expeditions",
+    fill = "season"
+  ) +
+  theme_light() +
+  theme(
+    legend.position = "bottom",
+    legend.title = element_text(size = 11),
+    legend.text = element_text(size = 10),
+    plot.title = element_text(hjust = 0.5, size = 14, face = "bold"),
+    axis.title.x = element_text(margin = margin(t = 10))
+  )
 
 ```
 
@@ -45,6 +123,31 @@ Notes:
 -   The line size is 1.2, the colors are from the brewer "Dark2" palette. The theme is set to minimal.
 
 ```{r}
+ # Load dataset
+phd_by_field <- tidytuesdayR::tt_load('2019-02-19')$phd_by_field
+
+# Summarize number of PhDs by year and broad field
+phd_summary <- phd_by_field |>
+  group_by(year, broad_field) |>
+  summarise(n = sum(n_phds, na.rm = TRUE), .groups = "drop")
+
+# Plot
+phd_summary |>
+  ggplot(aes(x = year, y = n, color = broad_field)) +
+  geom_line(size = 1.2) +
+  scale_x_continuous(breaks = scales::pretty_breaks()) +
+  scale_y_continuous(labels = scales::comma_format()) +
+  scale_color_brewer(palette = "Dark2", name = "Broad field") +
+  labs(
+    title = "Number of awarded Ph.D.-s in the US by year",
+    x = NULL,
+    y = NULL
+  ) +
+  theme_minimal() +
+  theme(
+    plot.title = element_text(hjust = 0.5, size = 14, face = "bold"),
+    legend.position = "right"
+  )
 
 ```
 
@@ -58,6 +161,61 @@ Notes:
 -   Both axis scales are log transformed and the labels comma formatted, using `scales::comma_format()`
 -   The point size is 2, . The theme is set to light.
 
-```{r}
+
+```{r commute-plot, message=FALSE, warning=FALSE}
+# Load data
+tt_data <- tidytuesdayR::tt_load(2019, week = 45)
+commute <- tt_data$commute
+
+# Add region and state abbreviation
+commute <- commute |>
+  dplyr::mutate(
+    region = state.region[match(state, state.name)],
+    state_abbr = state.abb[match(state, state.name)]
+  )
+
+# Rename region levels to match the legend in your image
+commute <- commute |>
+  dplyr::mutate(
+    region = dplyr::case_when(
+      is.na(region)        ~ "NA",
+      region == "Midwest"  ~ "North Central",
+      TRUE                 ~ region
+    )
+  )
+
+# Order regions to match legend
+commute$region <- factor(commute$region, levels = c("North Central", "Northeast", "South", "West", "NA"))
+
+# Aggregate
+commute_summary <- commute |>
+  dplyr::filter(mode %in% c("Bike", "Walk")) |>
+  dplyr::group_by(state, state_abbr, region, mode) |>
+  dplyr::summarise(total = sum(n), .groups = "drop") |>
+  tidyr::pivot_wider(names_from = mode, values_from = total) |>
+  dplyr::rename(walk = Walk, bike = Bike)
+
+# Plot
+ggplot(commute_summary, aes(x = walk, y = bike)) +
+  geom_point(aes(color = region), size = 2) +
+  geom_text(aes(label = state_abbr), size = 3, vjust = -0.5, check_overlap = TRUE) +
+  scale_x_log10(labels = scales::comma_format()) +
+  scale_y_log10(labels = scales::comma_format()) +
+  scale_color_manual(
+    values = c(
+      "North Central" = "#e41a1c",  # red
+      "Northeast"     = "#4daf4a",  # green
+      "South"         = "#00ced1",  # cyan
+      "West"          = "#984ea3",  # purple
+      "NA"            = "#666666"   # gray
+    )
+  ) +
+    labs(
+    title = "Number of people walking vs. biking to work in each USA state",
+    x = "Number of ppl walking to work (log N)",
+    y = "Number of ppl biking to work (log N)",
+    color = "State region"
+  )
+
 
 ```
