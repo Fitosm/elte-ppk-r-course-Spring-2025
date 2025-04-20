@@ -59,11 +59,82 @@ In your discussion of the findings, briefly interpret the results of the above a
 Read the dataset used in this assignment. Pay attention to the extension of the datafile.
 
 ```{r}
+library(readxl)
+library(tidyverse)
+library(broom)
+library(performance)
+
+# Download and read the Excel file
+data_url <- "https://raw.githubusercontent.com/Fitosm/elte-ppk-r-course-Spring-2025/main/data/assignment_3_dataset.xlsx"
+tmp_file <- tempfile(fileext = ".xlsx")
+download.file(data_url, tmp_file, mode = "wb")
+df <- read_excel(tmp_file)
+
+# Check structure
+glimpse(df)
+summary(df)
 
 ```
 
 ## Data and model diagnostics 
+```{r}
+# 1. Variable types and levels
+df$sex <- as.factor(df$sex)
+levels(df$sex)
+
+# 2. Ranges and summary stats for continuous variables
+df |>
+  summarise(
+    age = paste0(min(age, na.rm = TRUE), "–", max(age, na.rm = TRUE)),
+    STAI_trait = paste0(min(STAI_trait, na.rm = TRUE), "–", max(STAI_trait, na.rm = TRUE)),
+    pain_cat = paste0(min(pain_cat, na.rm = TRUE), "–", max(pain_cat, na.rm = TRUE)),
+    mindfulness = paste0(min(mindfulness, na.rm = TRUE), "–", max(mindfulness, na.rm = TRUE)),
+    cortisol_serum = paste0(min(cortisol_serum, na.rm = TRUE), "–", max(cortisol_serum, na.rm = TRUE)),
+    cortisol_saliva = paste0(min(cortisol_saliva, na.rm = TRUE), "–", max(cortisol_saliva, na.rm = TRUE)),
+    pain = paste0(min(pain, na.rm = TRUE), "–", max(pain, na.rm = TRUE))
+  )
+
+#check further on pain
+df |> filter(pain > 10)
+
+#check further on mindfulness
+df |> filter(mindfulness > 6)
+
+```
+
 ### Data diagnostics
+
+```{r}
+model_complex <- lm(pain ~ age + sex + STAI_trait + pain_cat + mindfulness + 
+                      cortisol_serum + cortisol_saliva, data = df)
+
+# Calculate Cook's distance
+cooks_d <- cooks.distance(model_complex)
+
+# Rule of thumb: cutoff = 4 / n
+cutoff <- 4 / nrow(df)
+
+# Identify influential points
+influential_points <- which(cooks_d > cutoff)
+
+length(influential_points)  # how many?
+influential_points          # show their indices
+
+# Plot
+plot(cooks_d, type = "h", main = "Cook's Distance", ylab = "Cook's D")
+abline(h = cutoff, col = "red", lty = 2)
+
+#linearity and homeoscedasticity
+plot(model_complex, which = 1)  # Residuals vs Fitted
+
+#normality of residuals
+plot(model_complex, which = 2)  # Q-Q Plot
+
+#multicollinearity
+library(car)
+vif(model_complex)
+
+```
 #### Descriptives of the variables
 
 Run an exploratory data analysis (EDA) to investigate the dataset.
@@ -73,6 +144,28 @@ Run an exploratory data analysis (EDA) to investigate the dataset.
 ```
 
 #### Correct coding errors
+
+```{r}
+#fix sex coding
+df$sex <- df$sex |>
+  fct_recode(female = "woman")
+levels(df$sex)
+
+#fix pain scale
+df <- df |> filter(pain <= 10)
+
+# Cap mindfulness values at 6 (rounding above theoretical max (1–6 scale)
+df <- df |> mutate(mindfulness = if_else(mindfulness > 6, 6, mindfulness))
+
+#make sure all is well
+summary(df$sex)
+summary(df$pain)
+summary(df$mindfulness)
+
+
+
+
+```
 
 If you find values in the dataset during the EDA, that are not correct based on the provided descriptions of the variables of the dataset please correct them here.
 
