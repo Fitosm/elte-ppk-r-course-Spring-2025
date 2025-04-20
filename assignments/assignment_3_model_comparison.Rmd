@@ -6,6 +6,7 @@ editor_options:
   chunk_output_type: console
 ---
 
+
 In this lab assignment you are going to work with (simulated) data related to perioperative pain and its psychological and hormonal predictors. In the assignment you will assess the added benefit of including some psychological and hormonal predictors to the already established demographic predictors of pain.
 
 In this assignment you will set up a hierarchical regression model to predict postoperative pain after wisdom tooth surgery. 
@@ -196,7 +197,8 @@ summary(df$mindfulness)
 If you find values in the dataset during the EDA, that are not correct based on the provided descriptions of the variables of the dataset please correct them here.
 
 ```{r}
-
+# 4. Optional: check ranges for other variables
+summary(df |> select(age, STAI_trait, pain_cat, cortisol_serum, cortisol_saliva, mindfulness, pain))
 ```
 
 ### Model diagnostics
@@ -205,7 +207,19 @@ If you find values in the dataset during the EDA, that are not correct based on 
 In order to test the more complex model for outliers and to test the assumptions first build the model.
 
 ```{r}
+# Model 1: Demographic predictors
+model_1 <- lm(pain ~ age + sex, data = df)
 
+# Model 2: Full model with psychological and hormonal predictors
+model_2 <- lm(pain ~ age + sex + STAI_trait + pain_cat + mindfulness +
+                cortisol_serum + cortisol_saliva, data = df)
+
+# -------------------------------
+# Summarize both models
+# -------------------------------
+
+summary(model_1)
+summary(model_2)
 ```
 
 #### Checking for influential outliers
@@ -213,6 +227,87 @@ In order to test the more complex model for outliers and to test the assumptions
 Check for outlier values in the model.
 
 ```{r}
+# -------------------------------
+# MODEL DIAGNOSTICS FUNCTION
+# -------------------------------
+check_model_diagnostics <- function(model, data, vif_threshold = 5) {
+  cat("=== OUTLIER CHECKS ===\n")
+
+  # --- Standardized residuals ---
+  std_res <- rstandard(model)
+  outliers_std <- which(abs(std_res) > 3)
+  if (length(outliers_std) > 0) {
+    cat("Standardized residuals > |3| at:\n")
+    print(outliers_std)
+  } else {
+    cat("No large standardized residuals detected.\n")
+  }
+
+  # --- Leverage values ---
+  n <- nrow(data)
+  p <- length(coef(model)) - 1
+  leverage_vals <- hatvalues(model)
+  leverage_cutoff <- 2 * (p + 1) / n
+  outliers_lev <- which(leverage_vals > leverage_cutoff)
+  cat("\nHigh leverage (>", round(leverage_cutoff, 3), ") at:\n")
+  print(outliers_lev)
+
+  # --- Cook's distance ---
+  cooks_d <- cooks.distance(model)
+  cooks_cutoff <- 4 / n
+  outliers_cook <- which(cooks_d > cooks_cutoff)
+  cat("\nHigh Cook's Distance (>", round(cooks_cutoff, 3), ") at:\n")
+  print(outliers_cook)
+
+  # --- Optional: return a summary of all flagged rows ---
+  unique_outliers <- sort(unique(c(outliers_std, outliers_lev, outliers_cook)))
+  if (length(unique_outliers) > 0) {
+    cat("\nFlagged observations (rows):\n")
+    print(unique_outliers)
+    cat("\nView flagged rows:\n")
+    print(data[unique_outliers, ])
+  } else {
+    cat("\nNo major outliers detected based on the combined criteria.\n")
+  }
+
+  # ==========================
+  cat("\n=== ASSUMPTION CHECKS ===\n")
+
+  # --- Normality of residuals ---
+  cat("\nChecking normality of residuals (Q-Q Plot)...\n")
+  plot(model, which = 2)
+
+  # --- Linearity + Homoscedasticity ---
+  cat("Checking linearity & homoscedasticity (Residuals vs Fitted)...\n")
+  plot(model, which = 1)
+
+  # --- Scale-Location plot for homoscedasticity ---
+  cat("Checking variance of residuals (Scale-Location)...\n")
+  plot(model, which = 3)
+
+  # --- Multicollinearity ---
+  if (!requireNamespace("car", quietly = TRUE)) {
+    install.packages("car")
+  }
+  library(car)
+  vif_values <- vif(model)
+
+  cat("\nVIF values:\n")
+  print(vif_values)
+
+  high_vif <- vif_values[vif_values > vif_threshold]
+  if (length(high_vif) > 0) {
+    cat("\n⚠️  WARNING: VIF values above threshold (", vif_threshold, "):\n")
+    print(high_vif)
+  } else {
+    cat("\n✅ VIF values are acceptable (below threshold of ", vif_threshold, ").\n")
+  }
+
+  invisible(list(
+    outliers = unique_outliers,
+    vif = vif_values
+  ))
+}
 
 ```
 
@@ -221,19 +316,19 @@ Check for outlier values in the model.
 Check the normality assumption.
 
 ```{r}
-
+#above
 ```
 
 Check the linearity assumption.
 
 ```{r}
-
+#above
 ```
 
 Check the homoscedasticty assumption (homogeneity of variance).
 
 ```{r}
-
+#above
 ```
 
 Check the multicollinearity assumption.
@@ -245,7 +340,7 @@ https://statisticalhorizons.com/multicollinearity
 http://blog.minitab.com/blog/understanding-statistics/handling-multicollinearity-in-regression-analysis
 
 ```{r}
-
+#above
 ```
 
 ### Making decision based on model diagnostics
@@ -253,13 +348,58 @@ http://blog.minitab.com/blog/understanding-statistics/handling-multicollinearity
 If based on the assumption tests you decide to drop a predictor variable you should do that here. Create your updated model.
 
 ```{r}
+# -------------------------------
+# Auto-drop high VIF predictors and refit model
+# -------------------------------
+auto_drop_high_vif <- function(model, data, vif_threshold = 3) {
+  if (!requireNamespace("car", quietly = TRUE)) install.packages("car")
+  library(car)
+
+  # Extract the formula and terms
+  original_formula <- formula(model)
+  terms <- attr(terms(model), "term.labels")
+  response <- all.vars(formula(model))[1]
+
+  # Calculate initial VIFs
+  vif_vals <- vif(model)
+
+  # Keep dropping vars with highest VIF until all are below threshold
+  while (any(vif_vals > vif_threshold)) {
+    worst_vif_var <- names(which.max(vif_vals))
+    cat("⚠️  Removing predictor due to high VIF (>", vif_threshold, "):", worst_vif_var, "\n")
+
+    # Remove this variable from the list of predictors
+    terms <- setdiff(terms, worst_vif_var)
+
+    # Refit model without it
+    new_formula <- as.formula(paste(response, "~", paste(terms, collapse = " + ")))
+    model <- lm(new_formula, data = data)
+
+    # Recalculate VIF
+    vif_vals <- vif(model)
+  }
+
+  cat("✅ Final model has all VIFs below", vif_threshold, "\n")
+  print(vif_vals)
+
+  return(model)
+}
+
+# Fit the full model again
+model_2 <- lm(pain ~ age + sex + STAI_trait + pain_cat + mindfulness +
+                cortisol_serum + cortisol_saliva, data = df)
+
+# Automatically drop predictors with VIF > 3
+model_updated <- auto_drop_high_vif(model_2, df, vif_threshold = 3)
+
 
 ```
 
 #### Checking outliers of the updated model
 
 ```{r}
-
+# \outlier and assumption diagnostics on the updated model
+diagnostics_updated <- check_model_diagnostics(model_updated, df)
 ```
 
 #### Checking assumptions of the updated model
@@ -267,13 +407,13 @@ If based on the assumption tests you decide to drop a predictor variable you sho
 Normality assumption
 
 ```{r}
-
+#above
 ```
 
 Linearity assumption
 
 ```{r}
-
+#above
 ```
 
 Homoscedasticty assumption (homogeneity of variance)
@@ -285,7 +425,7 @@ Homoscedasticty assumption (homogeneity of variance)
 Multicollinearity assumption
 
 ```{r}
-
+#above
 ```
 
 ## Model comparison
@@ -293,18 +433,135 @@ Multicollinearity assumption
 Create the simple model and get the results of the model that needs to be reported based on the What to report section.
 
 ```{r}
+# Model 1: simple demographic predictors
+model_1 <- lm(pain ~ age + sex, data = df)
+
+# Summary statistics for reporting
+summary(model_1)
 
 ```
 
 Create the more complex model based on the results of the model diagnostics. Also, get the results that needs to be reported based on the What to report section.
 
 ```{r}
+# Summary of final updated model
+summary(model_updated)
 
 ```
 
 Compare the two models.
 
 ```{r}
+# Compare with an ANOVA likelihood-ratio test
+anova(model_1, model_updated)
 
+# Also compare AIC
+AIC(model_1, model_updated)
+
+```
+```markdown
+# Model Diagnostics and Comparison Report
+
+## Data Cleaning and Preparation
+
+During initial exploratory data analysis (EDA), a few issues were identified:
+
+- One participant had an invalid pain score of 50, which exceeded the 0–10 scale. This observation was removed.
+- The `mindfulness` variable had values exceeding the theoretical maximum of 6. These were capped at 6, assuming rounding artifacts.
+- The `sex` variable contained an extra level ("woman"), which was recoded to "female" to match expected binary levels.
+
+## Model Diagnostics
+
+A full model was constructed using the predictors: `age`, `sex`, `STAI_trait`, `pain_cat`, `mindfulness`, `cortisol_serum`, and `cortisol_saliva`. Model diagnostics revealed:
+
+- **Influential outlier:** One observation (`ID_142`) was flagged by Cook’s distance.
+- **Multicollinearity:** Both `cortisol_serum` and `cortisol_saliva` had VIF values > 3, with `cortisol_saliva` at 6.67. These were considered problematic.
+- **Linearity & Homoscedasticity:** Residuals vs. fitted plot showed reasonably random scatter.
+- **Normality:** Q-Q plot indicated acceptable normality, with minor deviations.
+- **Correction:** Predictors with VIF > 3 were removed. The final updated model included:
+  - `age`, `sex`, `STAI_trait`, `pain_cat`, `mindfulness`
+
+---
+
+## Model 1: Simple Model
+
+This model includes only demographic predictors:
+
+```r
+model_1 <- lm(pain ~ age + sex, data = df)
+```
+
+### Model 1 Summary:
+
+- **Adjusted R²** = 0.076
+- **F(2, 156)** = 7.51, **p < .001**
+- **Coefficients:**
+
+| Predictor | Estimate | Std. Error | t value | p value |
+|-----------|----------|------------|---------|---------|
+| Intercept | 8.49     | 0.95       | 8.96    | < .001  |
+| age       | -0.089   | 0.023      | -3.87   | < .001  |
+| sex (male)| 0.103    | 0.233      | 0.44    | .659    |
+
+---
+
+## Model 2: Final Complex Model (After VIF Correction)
+
+```r
+model_updated <- lm(pain ~ age + sex + STAI_trait + pain_cat + mindfulness, data = df)
+```
+
+### Model 2 Summary:
+
+- **Adjusted R²** = 0.334
+- **F(5, 153)** = 16.2, **p < .001**
+- **Coefficients:**
+
+| Predictor       | Estimate | Std. Error | t value | p value |
+|----------------|----------|------------|---------|---------|
+| Intercept      | 1.91     | 1.51       | 1.26    | .210    |
+| age            | -0.028   | 0.022      | -1.27   | .207    |
+| sex (male)     | 0.365    | 0.201      | 1.82    | .071    |
+| STAI_trait     | -0.031   | 0.025      | -1.22   | .224    |
+| pain_cat       | 0.098    | 0.027      | 3.63    | < .001  |
+| mindfulness    | -0.145   | 0.113      | -1.29   | .200    |
+
+---
+The variable pain_cat refers to pain catastrophizing — the tendency to focus on and exaggerate pain experiences, and feel helpless about them. It is measured using the Pain Catastrophizing Scale (range: 0–52). In the final model, pain_cat was the strongest predictor of postoperative pain, with a positive and significant coefficient (B = 0.098, p < .001). This means that individuals with higher pain catastrophizing scores reported higher levels of pain after surgery, aligning with established psychological pain theories.
+---
+
+## Regression Equation (Model 2)
+
+\[
+\text{pain} = 1.91 - 0.028 \times \text{age} + 0.365 \times \text{sex}_{\text{male}} - 0.031 \times \text{STAI\_trait} + 0.098 \times \text{pain\_cat} - 0.145 \times \text{mindfulness}
+\]
+
+---
+
+## Model Comparison
+
+- **AIC:**
+  - Model 1: 463.4
+  - Model 2: 419.9
+- **Likelihood Ratio Test (ANOVA):**
+
+```r
+anova(model_1, model_updated)
+```
+
+Result: Significant improvement  
+**F(df = 3, 153)** = 16.57, **p < .001**
+
+---
+
+The simple model (Model 1), which included only age and sex, explained 7.6% of the variance in pain (Adjusted R² = 0.076).
+
+The final model (Model 2), which retained the best psychological predictors after removing multicollinearity issues, explained 33.4% of the variance (Adjusted R² = 0.334). This represents an increase of over 4× in explained variance, highlighting the importance of including psychological factors like pain catastrophizing.
+
+## Discussion
+
+Including psychological and hormonal predictors (specifically `pain_cat`) substantially improved model fit, increasing the explained variance from 7.6% (Model 1) to 33.4% (Model 2). While several psychological predictors were not individually significant, their collective contribution was valuable, and `pain_cat` emerged as the strongest predictor of postoperative pain. Multicollinearity issues were addressed by removing high-VIF variables, ensuring the validity of model interpretations.
+
+Thus, the inclusion of psychological predictors provided meaningful explanatory power beyond demographics alone.
 ```
 
