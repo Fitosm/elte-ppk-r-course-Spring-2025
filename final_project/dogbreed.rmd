@@ -1,0 +1,406 @@
+---
+title: "Dog Breed Trait Analysis"
+author: "Michelle Fitos"
+date: "`r Sys.Date()`"
+output:
+  html_document:
+    toc: false
+    number_sections: true
+    code_folding: none
+    df_print: tibble
+    keep_md: false
+    echo: true
+---
+
+```{r setup, include=FALSE}
+# Load libraries
+library(tidyverse)
+library(tidytuesdayR)
+library(janitor)
+library(stringi)
+library(scales)
+library(rpart)
+library(broom)
+library(dplyr)
+library(rpart.plot)
+library(Metrics)
+library(testthat)
+```
+
+# 1. Introduction
+
+In this project, I explore whether two breed-level behavioral traits—**intelligence** and **suspicion**—can help explain variation in average dog breed popularity rankings. Popularity is measured using historical breed ranking data, which serves as a practical indicator of how frequently each breed has been chosen over time.
+
+The motivation behind all of this is the idea that the popularity of dog breeds may be influenced by (stereotyped?) behavioral characteristics (anecdotal observations offered below in the relevant sections). Breeds considered more intelligent may appeal because they are theoretically easier to train and more responsive, while breeds rated as more suspicious might be preferred for protective roles or avoided due to potential management difficulties. By creating proxies from existing rated traits and focusing on these two proxies, I aim to evaluate whether they are associated with breed popularity, represented as a mean over time.
+
+In addition to examining overall trends, I also compare the results across two specific groups of breeds. The first group consists of **Hungarian breeds**, which are of regional and cultural interest. The second group includes the breeds that have lived with my family—the **Fitos family**—over the past 20 years. Although these breeds are not in any way "official," they provide a personally meaningful subset through which to examine how breed traits relate to popularity. 
+
+# Load and Clean Data
+
+```{r load-data}
+tuesdata <- tt_load("2022-02-01")
+breed_traits <- tuesdata$breed_traits |> clean_names()
+breed_rank <- tuesdata$breed_rank |> clean_names()
+```
+
+# Fitos Family and Trait Proxies
+
+```{r define-fitos}
+# these needed to be aggressively cleaned in order to be useful
+clean_string <- function(x) {
+  x |>
+    stri_trans_general("Latin-ASCII") |>
+    str_to_lower() |>
+    str_replace_all("[^a-z]", "")
+}
+
+fitos_family_breeds <- c("French Bulldogs", "Great Danes", "American Staffordshire Terriers")
+fitos_family_breeds_clean <- clean_string(fitos_family_breeds)
+
+breed_traits <- breed_traits |> 
+  mutate(
+    breed_clean = clean_string(breed),
+    fitos_family_dog = breed_clean %in% fitos_family_breeds_clean,
+    intelligence_proxy = rowMeans(pick(trainability_level, adaptability_level, mental_stimulation_needs), na.rm = TRUE),
+    suspicion_proxy = rowMeans(tibble(
+      barking_level,
+      watchdog_protective_nature,
+      6 - openness_to_strangers # reversed
+    ), na.rm = TRUE)
+  )
+
+# without unit testing, nothing good happens
+test_that("Trait proxies and Fitos family flags are valid", {
+  expect_true("intelligence_proxy" %in% names(breed_traits))
+  expect_true("suspicion_proxy" %in% names(breed_traits))
+  expect_type(breed_traits$intelligence_proxy, "double")
+  expect_type(breed_traits$suspicion_proxy, "double")
+  expect_type(breed_traits$fitos_family_dog, "logical")
+})
+```
+
+# Hungarian Breeds and Group Labeling
+
+```{r define-hungarian-breeds}
+#more cleaning
+hungarian_keywords <- c("vizsla", "puli", "pumi", "komondor")
+hungarian_keywords_clean <- clean_string(hungarian_keywords)
+hungarian_patterns <- c(hungarian_keywords_clean, paste0(hungarian_keywords_clean, "k"))
+
+breed_traits <- breed_traits |> 
+  mutate(
+    hungarian_breed = map_lgl(
+      breed_clean,
+      ~ any(str_detect(.x, paste(hungarian_patterns, collapse = "|")))
+    ),
+    group = case_when(
+      fitos_family_dog ~ "Fitos Family",
+      hungarian_breed ~ "Hungarian Breeds",
+      TRUE ~ "All Other Breeds"
+    )
+  )
+
+test_that("Hungarian breed classification and group column are added", {
+  expect_true("hungarian_breed" %in% names(breed_traits))
+  expect_true("group" %in% names(breed_traits))
+  expect_type(breed_traits$hungarian_breed, "logical")
+  expect_true(all(breed_traits$group %in% c("Fitos Family", "Hungarian Breeds", "All Other Breeds")))
+})
+```
+
+# Join Trait and Rank Data
+
+```{r model-setup}
+breed_rank_mean <- breed_rank |> 
+  mutate(mean_rank = rowMeans(select(breed_rank, where(is.numeric)), na.rm = TRUE)) |> 
+  select(breed, mean_rank)
+
+breed_model <- breed_traits |> 
+  inner_join(breed_rank_mean, by = "breed") |> 
+  mutate(mean_rank = as.numeric(mean_rank)) |> 
+  drop_na(intelligence_proxy, suspicion_proxy, mean_rank)
+
+test_that("Mean rank merged and cleaned", {
+  expect_true("mean_rank" %in% names(breed_model))
+  expect_gt(nrow(breed_model), 0)
+})
+```
+
+# Descriptive Statistics
+
+```{r descriptives}
+# store the summary statistics
+desc_stats <- breed_model |>
+  dplyr::select(intelligence_proxy, suspicion_proxy, mean_rank) |>
+  dplyr::summarise(
+    across(
+      everything(),
+      list(
+        mean = \(x) mean(x, na.rm = TRUE),
+        sd   = \(x) sd(x, na.rm = TRUE)
+      )
+    )
+  ) |>
+  tidyr::pivot_longer(
+    everything(),
+    names_to = c("variable", ".value"),
+    names_pattern = "(.*)_(mean|sd)"
+  )
+# reformat variable names for nicer display
+desc_table <- desc_stats |>
+  dplyr::mutate(
+    variable = dplyr::case_when(
+      variable == "intelligence_proxy" ~ "Intelligence",
+      variable == "suspicion_proxy"    ~ "Suspicion",
+      variable == "mean_rank"          ~ "Average Popularity Rank",
+      TRUE ~ variable
+    ),
+    mean = round(mean, 2),
+    sd   = round(sd, 2)
+  )
+
+# Display table
+knitr::kable(
+  desc_table,
+  col.names = c("Variable", "Mean", "SD"),
+  caption = "Summary statistics for key variables across all breeds"
+)
+
+```
+## Descriptive Statistics interpretation
+
+The dataset includes three key variables: intelligence proxy, suspicion proxy, and average popularity rank.
+
+The mean intelligence score across all breeds is approximately **`r round(desc_stats$mean[desc_stats$variable == "intelligence_proxy"], 1)`** (SD = `r round(desc_stats$sd[desc_stats$variable == "intelligence_proxy"], 1)`), suggesting that most breeds in the dataset are rated moderately high on perceived intelligence.
+
+The suspicion proxy has a mean of **`r round(desc_stats$mean[desc_stats$variable == "suspicion_proxy"], 1)`** (SD = `r round(desc_stats$sd[desc_stats$variable == "suspicion_proxy"], 1)`), indicating greater variability in how breeds are perceived in terms of behaving like all passersby are potential murderers.
+
+Lastly, the average popularity rank has a mean of **`r round(desc_stats$mean[desc_stats$variable == "mean_rank"], 1)`** with a standard deviation of `r round(desc_stats$sd[desc_stats$variable == "mean_rank"], 1)`, showing that breed popularity is highly dispersed, with some breeds consistently ranking near the top and others much lower on average.
+
+```{r desc-table, echo=FALSE}
+knitr::kable(
+  desc_table,
+  col.names = c("Variable", "Mean", "SD"),
+  caption = "Summary statistics for key variables across all breeds"
+)
+
+# Exploratory Visualization
+
+```{r eda-heatmap}
+group_summary <- breed_traits |> 
+  summarise(
+    avg_intelligence = mean(intelligence_proxy, na.rm = TRUE),
+    avg_suspicion = mean(suspicion_proxy, na.rm = TRUE),
+    .by = group
+  ) |> 
+  pivot_longer(
+    cols = starts_with("avg_"),
+    names_to = "trait",
+    values_to = "value"
+  )
+
+ggplot(group_summary, aes(x = trait, y = group, fill = value)) +
+  geom_tile(color = "white") +
+  scale_fill_viridis_c(option = "magma") +
+  labs(title = "Trait Profiles by Group") +
+  theme_minimal()
+```
+
+***Interpretation of Trait Profiles by Group***
+
+The heatmap displays the average intelligence and average suspicion scores for three dog breed groups:
+
+**Hungarian Breeds**
+
+**Fitos Family** (breeds my family has lived with over the past 20 years)
+
+**All Other Breeds** (the remaining breeds in the dataset)
+
+Color intensity represents the magnitude of the average trait score, with lighter colors indicating higher values, and darker shades indicating lower values.
+
+***Intelligence*** (avg_intelligence)
+
+**Hungarian Breeds** stand out with the highest average intelligence score, represented by the lightest tile in the avg_intelligence column. This suggests that breeds from Hungary in this dataset are, on average, rated as more intelligent than other groups.
+
+**All Other Breeds** and **Fitos Family breeds** have moderate intelligence scores, with similar mid-range colors. The Fitos family breeds are slightly lower on average than the full breed set, but not drastically.  Again, the current dog doesn't know this and does a lot of head tilting when someone says the word "go."
+
+This pattern suggests that Hungarian breeds, perhaps due to their traditional working or herding roles, are consistently perceived as smart. I wish that mudi were on here - I feel like they woud be head and shoulders above on intelligence.
+
+***Suspicion*** (avg_suspicion)
+
+The **Fitos Family breeds** show the lowest average suspicion score — the darkest tile on the plot. This indicates that the dogs my family has lived with tend, as a breed, to be less wary or aloof around strangers, aligning with more sociable or companion-style behavior. However, our current Frenchie is not aware of this data and is apt to lose his mind when someone comes to repair something in the house.
+
+**Hungarian Breeds** and **All Other Breeds** are similar to each other, both showing moderately high suspicion scores. This could reflect the fact that many Hungarian breeds have historical functions as guard or watchdogs, or are known for being protective and reserved.
+
+This pattern reveals a sharp behavioral contrast: the breeds my family has lived with are, on average, should stastically be more approachable and less suspicious, while other groups — especially Hungarian breeds — lean more toward watchfulness or caution.
+
+# Hypotheses
+
+1. (unofficial and shown in the heatmap above) Hungarian and Fitos dogs will score higher in both intelligence and suspicion.
+2. Intelligence and suspicion will predict breed popularity.
+3. Suspicion will moderate the effect of intelligence on popularity.
+
+## Linear Model: Predicting Breed Popularity from Traits
+
+To assess whether intelligence and suspicion explain variation in breed popularity, I fit a linear regression model where **mean popularity rank** is predicted by **intelligence** and **suspicion**.
+
+```{r fit-lm, message=FALSE}
+# Fit linear regression model
+lm_model <- lm(mean_rank ~ intelligence_proxy + suspicion_proxy, data = breed_model)
+
+# Extract model summary
+lm_summary <- summary(lm_model)
+
+# Tidy coefficients
+coefs <- broom::tidy(lm_model)
+```
+
+
+#Model Summary
+
+This model explains approximately `r round(lm_summary$r.squared, 3)` of the variance in breed popularity. The adjusted R² is `r round(lm_summary$adj.r.squared, 3)`, and the residual standard error is `r round(lm_summary$sigma, 2)`.
+
+The overall F-statistic is `r round(lm_summary$fstatistic[1], 2)`, on `r lm_summary$fstatistic[2]` and `r lm_summary$fstatistic[3]` degrees of freedom, with a corresponding p-value of `r signif(pf(lm_summary$fstatistic[1], lm_summary$fstatistic[2], lm_summary$fstatistic[3], lower.tail = FALSE), 3)`, indicating that the model significantly improves upon a null model.
+
+# Interaction Model
+
+```{r model-interaction}
+lm_interaction <- lm(mean_rank ~ intelligence_proxy * suspicion_proxy, data = breed_model)
+summary(lm_interaction)
+```
+
+## Interaction Model interpretation
+
+With the interaction included, `R² =` `r round(summary(lm_interaction)$r.squared, 3)`.
+
+The interaction coefficient is `r round(coef(lm_interaction)["intelligence_proxy:suspicion_proxy"], 2)`, with a p-value of `r signif(summary(lm_interaction)$coefficients["intelligence_proxy:suspicion_proxy", 4], 3)`.
+
+This suggests the effect of intelligence on breed popularity depends on the level of suspicion.
+
+# Residuals & Assumptions
+
+```{r model-residuals}
+breed_model <- breed_model |> 
+  mutate(
+    fitted = predict(lm_model),
+    residuals = resid(lm_model)
+  )
+
+ggplot(breed_model, aes(x = fitted, y = residuals)) +
+  geom_point() +
+  geom_hline(yintercept = 0, linetype = "dashed")
+```
+
+```{r residual-normality, fig.width=6, fig.height=4}
+
+# Histogram of residuals with improved formatting
+ggplot(breed_model, aes(x = residuals)) +
+  geom_histogram(bins = 15, fill = "steelblue", color = "white") +
+  labs(
+    title = "Histogram of Residuals",
+    x = "Residual",
+    y = "Count"
+  ) +
+  theme_minimal()
+
+
+# QQ plot for residuals
+qqnorm(breed_model$residuals,
+       main = "Normal Q-Q Plot of Residuals",
+       pch = 19, col = "darkred")
+qqline(breed_model$residuals, col = "blue", lwd = 2)
+
+```
+## Residuals & Assumption Checks
+
+To assess model assumptions, I examined both residual plots and their distribution.
+
+The **residual histogram** displays a notable right skew, with more frequent large positive residuals. This indicates that the model tends to underestimate popularity rank for certain breeds, and these underestimations are sometimes substantial.
+
+The **QQ plot** shows significant deviations from the expected normal distribution, particularly in the upper tail. This suggests that the residuals do not follow a normal distribution and that extreme values occur more often than would be expected under the normality assumption.
+
+While the model appears to satisfy the assumption of **linearity** (based on the residuals vs. fitted plot), the **non-normality of residuals** implies that p-values and confidence intervals from the linear regression model should be interpreted with some caution.
+
+Given these violations, a **decision tree** was included as a complementary model. Decision trees are **non-parametric** and do not rely on assumptions of normality or linearity. They are especially well-suited to capturing **nonlinear thresholds** and **interaction effects**, which may underlie the skew and structure in the residuals. By identifying simple, rule-based splits in the predictors, the tree provides an interpretable and assumption-free alternative to the linear model, making it a useful addition to the analysis.
+
+```{r predictor-correlation}
+breed_model |> 
+  select(intelligence_proxy, suspicion_proxy) |> 
+  cor(use = "complete.obs")
+
+cor_matrix <- breed_model |> 
+  select(intelligence_proxy, suspicion_proxy) |> 
+  cor(use = "complete.obs")
+
+```
+## Correlation Between Predictors
+
+To check for multicollinearity, I examined the correlation between the two predictors.
+
+The correlation between **intelligence** and **suspicion** is `r round(cor_matrix["intelligence_proxy", "suspicion_proxy"], 3)`. This low value indicates that the two predictors are only weakly associated, suggesting that multicollinearity is **not a concern** in this model. Each variable contributes relatively independent information about breed popularity.
+
+# Decision Tree
+
+```{r model-tree}
+tree_model <- rpart(mean_rank ~ intelligence_proxy + suspicion_proxy, data = breed_model)
+rpart.plot(tree_model, main = "Decision Tree")
+```
+
+## Decision Tree interpretation
+
+To complement the linear regression, I fit a **decision tree** predicting breed popularity from intelligence and suspicion scores. Unlike linear models, decision trees are non-parametric and can detect **nonlinear relationships**, **interactions**, and **threshold effects** without requiring assumptions about the distribution of predictors or residuals.
+
+The tree’s structure reveals a set of **interpretable decision rules** based on behavioral traits:
+
+- The first split occurs on **suspicion**, with a threshold at `r round(tree_model$splits[1, "index"], 2)`. Breeds below this suspicion level tend to be more popular.
+- Among breeds with **higher suspicion**, a second split is made based on **intelligence**, with a threshold at `r round(tree_model$splits[2, "index"], 2)`. More intelligent but suspicious breeds tend to fare better in popularity than suspicious breeds with lower intelligence.
+
+This structure suggests a **conditional relationship**: high suspicion suppresses popularity, but high intelligence may partially offset this effect.
+
+The decision tree captures **nonlinear interactions** that are only partially represented in the linear model’s interaction term. While the tree may not outperform the linear model in predictive accuracy, its **clear thresholds** and **rule-based explanations** make it valuable for understanding patterns that influence breed preference in a more intuitive way.
+
+
+# RMSE Comparison
+
+```{r model-rmse}
+lm_rmse <- rmse(breed_model$mean_rank, predict(lm_model))
+tree_rmse <- rmse(breed_model$mean_rank, predict(tree_model))
+
+tibble(model = c("Linear", "Tree"), rmse = c(lm_rmse, tree_rmse))
+```
+
+- Linear RMSE: `r round(lm_rmse, 2)`
+- Tree RMSE: `r round(tree_rmse, 2)`
+
+## Discussion
+
+Both models offer useful insights into how intelligence and suspicion relate to breed popularity, but they differ in complexity, interpretability, and flexibility.
+
+The **linear regression model** assumes additive and linear effects. It identified suspicion as a negative predictor of popularity and suggested that intelligence has a modest positive effect. However, residual diagnostics revealed deviations from normality and some skew, indicating that the linear model may not fully capture the structure in the data.
+
+The **decision tree**, while slightly more flexible and slightly more accurate (RMSE = `r round(tree_rmse, 2)` vs. `r round(lm_rmse, 2)`), revealed more interpretable and conditional rules. Specifically, it showed that:
+
+- Breeds with **low suspicion** are generally more popular, regardless of intelligence.
+- For breeds with **high suspicion**, only those with **higher intelligence** maintain some level of popularity.
+
+This suggests that suspicion strongly suppresses popularity, but that intelligence can compensate—**but only when suspicion is already high**. This kind of **threshold and interaction-based pattern** is clearer in the tree model than in the regression.
+
+While the difference in RMSE is relatively small, the **tree’s interpretability and ability to model nonlinear relationships** justify its inclusion. It complements the regression model by surfacing distinct, intuitive splits that are especially useful for understanding real-world decision processes, such as why certain dog breeds appeal to the public.
+
+I would like our current dog to read all of this and dial down his suspicion.  I strongly suspect that he will not, since...he is a dog.
+
+# Limitations
+
+- Trait proxies simplify real behavior
+- Group sizes are unbalanced
+- Media factors not included
+- Dogs unfortunately cannot read so this is all of limited use within my household
+
+# References
+
+TidyTuesday. (2022, February 1). *Dog Breed Traits and Rankings*. https://github.com/rfordatascience/tidytuesday
+```
+
+---
+
+overall impressions:  this all gets a lot easier the more I struggle with it, but I feel like it will take years before I can do this without looking something up at each step
